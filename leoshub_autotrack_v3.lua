@@ -1,6 +1,6 @@
--- Leo's Hub - Auto Track v3 (LocalScript)
+-- Leo's Hub - Auto Track v4 (LocalScript)
 -- Place inside StarterCharacterScripts
--- FEATURES: Wall Tech, Fast Jukes, Shiftlock Camera Control, Humanized Tracking, Auto-Walk Offense, Smart Bomb Grab
+-- FEATURES: Smart opponent detection, humanized camera, smart grab timing, hold mechanic, continuous movement
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -25,14 +25,11 @@ local settings = {
     jukeEnabled       = true,
     humanizeEnabled   = true,
     shiftlockEnabled  = true,
-    grabOptimalTime   = 2.25,   -- Optimal time to grab bomb
-    passAtTime        = 1.0,    -- Will pass at this time for kill
+    grabOptimalTime   = 2.25,
+    passAtTime        = 1.0,
 }
 
--- ─────────────────────────────────────────────
---  Persist settings
--- ─────────────────────────────────────────────
-local saveFile = "leoshub_autotrack_v3.json"
+local saveFile = "leoshub_autotrack_v4.json"
 
 local function saveSettings()
     pcall(function()
@@ -87,7 +84,7 @@ local dragLabel = Instance.new("TextLabel")
 dragLabel.Size = UDim2.new(1, -145, 1, 0)
 dragLabel.Position = UDim2.new(0, 12, 0, 0)
 dragLabel.BackgroundTransparency = 1
-dragLabel.Text = "⠿ Leo's Hub v3"
+dragLabel.Text = "⠿ Leo's Hub v4"
 dragLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
 dragLabel.Font = Enum.Font.GothamBold
 dragLabel.TextSize = 17
@@ -178,9 +175,6 @@ statusLabel.TextSize = 14
 statusLabel.Font = Enum.Font.Gotham
 statusLabel.Parent = contentFrame
 
--- ─────────────────────────────────────────────
---  Settings panel
--- ─────────────────────────────────────────────
 local settingsFrame = Instance.new("Frame")
 settingsFrame.Size = UDim2.new(1, 0, 1, -40)
 settingsFrame.Position = UDim2.new(0, 0, 0, 40)
@@ -319,14 +313,12 @@ local function createToggleOnly(labelText, toggleKey, posY)
     end)
 end
 
--- Original settings
 createSetting("Stop Distance", "stopDistance", 0.5, 0.5, 1,   10)
 createSetting("Back Distance", "backDistance", 1,   1,   15,  90,  "backEnabled")
 createSetting("Trigger Time",  "triggerTime",  0.5, 0.5, 10,  226, "triggerEnabled")
 createSetting("Grab at Time",  "grabOptimalTime", 0.25, 0.5, 10, 362)
 createSetting("Pass at Time",  "passAtTime", 0.25, 0.1, 3,   476)
 
--- New toggle-only settings
 createToggleOnly("Wall Tech (Glide Along Walls)", "wallTechEnabled", 590)
 createToggleOnly("Juke Defense (FAST)",           "jukeEnabled",     636)
 createToggleOnly("Humanized Offense",             "humanizeEnabled", 682)
@@ -400,9 +392,6 @@ closeButton.MouseButton1Click:Connect(function()
     screenGui:Destroy()
 end)
 
--- ─────────────────────────────────────────────
---  Toggle helpers
--- ─────────────────────────────────────────────
 local function setEnabled(state)
     enabled = state
     if state then
@@ -437,46 +426,25 @@ toggleBtn.MouseButton1Click:Connect(function() setEnabled(not enabled) end)
 teamBtn.MouseButton1Click:Connect(function() setTeamCheck(not teamCheckEnabled) end)
 
 -- ─────────────────────────────────────────────
---  Team / enemy detection
+--  Opponent Detection (Only enemy in the match)
 -- ─────────────────────────────────────────────
-local function isGreenHighlighted(otherPlayer)
-    local theirChar = otherPlayer.Character
-    if not theirChar then return false end
-    local highlight = theirChar:FindFirstChildOfClass("Highlight")
-    if highlight then
-        local c = highlight.FillColor
-        if c.G > 0.4 and c.G > c.R * 1.5 and c.G > c.B * 1.5 then return true end
-        local c2 = highlight.OutlineColor
-        if c2.G > 0.4 and c2.G > c2.R * 1.5 and c2.G > c2.B * 1.5 then return true end
+local function getPlayerTeam(player)
+    if player.Team then
+        return player.Team.Name
     end
-    for _, v in ipairs(theirChar:GetDescendants()) do
-        if v:IsA("Highlight") then
-            local c = v.FillColor
-            if c.G > 0.4 and c.G > c.R * 1.5 and c.G > c.B * 1.5 then return true end
-        end
-        if v:IsA("SelectionBox") then
-            local c = v.Color3
-            if c.G > 0.4 and c.G > c.R * 1.5 and c.G > c.B * 1.5 then return true end
-        end
-    end
-    for _, v in ipairs(theirChar:GetDescendants()) do
-        if v:IsA("BasePart") and v.Name ~= "HumanoidRootPart" then
-            local c = v.Color
-            if c.G > 0.5 and c.G > c.R * 2 and c.G > c.B * 2 then return true end
-        end
-    end
-    return false
+    return nil
 end
 
-local function isEnemy(otherPlayer)
-    if not teamCheckEnabled then return true end
-    return not isGreenHighlighted(otherPlayer)
+local function isTeammate(otherPlayer)
+    if not teamCheckEnabled then return false end
+    return getPlayerTeam(localPlayer) == getPlayerTeam(otherPlayer)
 end
 
-local function getClosestEnemy(myRoot)
+local function getOpponentInMatch(myRoot)
+    -- Find THE opponent in this 1v1 match (not teammates, not random players)
     local closest, closestDist = nil, math.huge
     for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= localPlayer and isEnemy(player) then
+        if player ~= localPlayer and not isTeammate(player) then
             local theirChar = player.Character
             if theirChar then
                 local theirRoot  = theirChar:FindFirstChild("HumanoidRootPart")
@@ -492,6 +460,22 @@ local function getClosestEnemy(myRoot)
         end
     end
     return closest
+end
+
+local function getOpponentHoldingBomb(myRoot)
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= localPlayer and not isTeammate(player) then
+            local char = player.Character
+            if char then
+                local tool = char:FindFirstChildOfClass("Tool")
+                local root = char:FindFirstChild("HumanoidRootPart")
+                if tool and root then
+                    return player, root
+                end
+            end
+        end
+    end
+    return nil, nil
 end
 
 local function getToolTimer(tool)
@@ -511,28 +495,8 @@ local function getToolTimer(tool)
     return nil
 end
 
-local function getPlayerHoldingBomb(myRoot)
-    local closest, closestDist = nil, math.huge
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player == localPlayer then continue end
-        local char = player.Character
-        if not char then continue end
-        local tool = char:FindFirstChildOfClass("Tool")
-        local root = char:FindFirstChild("HumanoidRootPart")
-        if tool and root then
-            local dist = (myRoot.Position - root.Position).Magnitude
-            if dist < closestDist then
-                closestDist = dist
-                closest = {player = player, root = root}
-            end
-        end
-    end
-    if closest then return closest.player, closest.root end
-    return nil, nil
-end
-
 -- ─────────────────────────────────────────────
---  Wall Tech (glide along walls)
+--  Wall Tech
 -- ─────────────────────────────────────────────
 local RAY_LEN   = 2.5
 local WALL_CAST = RaycastParams.new()
@@ -560,7 +524,6 @@ end
 
 -- ─────────────────────────────────────────────
 --  FAST JUKE (defense)
---  MUCH FASTER: shorter bursts, longer distances, rapid succession
 -- ─────────────────────────────────────────────
 local jukeState = {
     active      = false,
@@ -608,16 +571,13 @@ local function tickJuke(dt, myRoot, awayDir, humanoid)
 end
 
 -- ─────────────────────────────────────────────
---  SHIFTLOCK + HUMANIZED CAMERA CONTROL
---  Spazzes the camera left/right when attacking
---  Turns to face opponent (bomb in right hand)
+--  HUMANIZED CAMERA (less aggressive, more human-like)
 -- ─────────────────────────────────────────────
 local cameraState = {
     active         = false,
     spazzIntensity = 0,
     spazzTimer     = 0,
-    targetYaw      = 0,
-    baseYaw        = 0,
+    muscleSpazz    = 0,
 }
 
 local function updateShiftlockCamera(myRoot, targetPos, dt)
@@ -632,14 +592,18 @@ local function updateShiftlockCamera(myRoot, targetPos, dt)
     
     local baseYaw = math.atan2(dirToTarget.X, dirToTarget.Z)
     
+    -- HUMANIZED SPAZZ: slower, less aggressive
     cameraState.spazzTimer = cameraState.spazzTimer - dt
     if cameraState.spazzTimer <= 0 then
-        cameraState.spazzIntensity = 0.3 + math.random() * 0.5
-        cameraState.spazzTimer = 0.05 + math.random() * 0.08
+        -- Much smaller spazz intensity (0.08 to 0.15 radians = ~4.5-8.6 degrees)
+        cameraState.spazzIntensity = 0.08 + math.random() * 0.07
+        -- Less frequent spazz (200-350ms between twitches)
+        cameraState.spazzTimer = 0.2 + math.random() * 0.15
     end
     
-    local spazzAmount = math.sin(cameraState.spazzTimer * 100) * cameraState.spazzIntensity
-    local finalYaw = baseYaw + spazzAmount
+    -- Slower, more natural oscillation
+    cameraState.muscleSpazz = math.sin(cameraState.spazzTimer * 20) * cameraState.spazzIntensity
+    local finalYaw = baseYaw + cameraState.muscleSpazz
     
     local offsetDist = 8
     local offsetHeight = 1.5
@@ -649,7 +613,6 @@ local function updateShiftlockCamera(myRoot, targetPos, dt)
     local offsetZ = math.cos(finalYaw) * offsetSide + math.sin(finalYaw) * offsetDist
     
     local cameraPos = myRoot.Position + Vector3.new(offsetX, offsetHeight, offsetZ)
-    
     local lookTarget = targetPos + Vector3.new(0, 1, 0)
     
     Camera.CFrame = CFrame.new(cameraPos, lookTarget)
@@ -657,15 +620,14 @@ end
 
 -- ─────────────────────────────────────────────
 --  Humanized offense
---  Slight positional drift + throttled updates + MORE ERRATIC
 -- ─────────────────────────────────────────────
 local humanizeState = {
     offset      = Vector3.new(0, 0, 0),
     driftTimer  = 0,
-    DRIFT_INT   = 0.12,   -- FASTER drift updates for more erratic movement
-    MAX_OFFSET  = 2.0,    -- LARGER offsets for more chaotic movement
+    DRIFT_INT   = 0.12,
+    MAX_OFFSET  = 2.0,
     updateTimer = 0,
-    UPDATE_INT  = 0.06,   -- MORE frequent updates for unpredictability
+    UPDATE_INT  = 0.06,
 }
 
 local function humanizedMoveTo(myRoot, targetPos, humanoid, dt)
@@ -700,83 +662,70 @@ local function humanizedMoveTo(myRoot, targetPos, humanoid, dt)
 end
 
 -- ─────────────────────────────────────────────
---  AUTO-WALK TO OPPONENT AT START
+--  CONTINUOUS WALKING (never stop moving)
 -- ─────────────────────────────────────────────
-local function autoWalkToOpponent(myRoot, humanoid)
-    local enemyData = getClosestEnemy(myRoot)
-    if enemyData then
-        local dist = (myRoot.Position - enemyData.root.Position).Magnitude
-        
-        if dist > settings.stopDistance + 5 then
-            local dirToEnemy = (enemyData.root.Position - myRoot.Position).Unit
-            local targetPos = myRoot.Position + dirToEnemy * 10
-            
-            if settings.wallTechEnabled then
-                if not applyWallTech(myRoot, dirToEnemy, humanoid) then
-                    humanoid:MoveTo(targetPos)
-                end
-            else
-                humanoid:MoveTo(targetPos)
-            end
-            return true
+local function continuousWalk(myRoot, humanoid, direction)
+    local target = myRoot.Position + direction * 25
+    if settings.wallTechEnabled then
+        if not applyWallTech(myRoot, direction, humanoid) then
+            humanoid:MoveTo(target)
         end
+    else
+        humanoid:MoveTo(target)
     end
-    return false
 end
 
 -- ─────────────────────────────────────────────
---  SMART BOMB GRAB LOGIC
---  After passing, run away then grab at optimal time
+--  HOLD MECHANIC (face away, hold bomb til 2/1 secs)
 -- ─────────────────────────────────────────────
-local bombState = {
-    justPassed = false,
-    runAwayTimer = 0,
-    RUN_AWAY_TIME = 0.8,  -- Run away for 0.8s after pass
+local holdState = {
+    active = false,
+    startTime = 0,
 }
 
-local function handlePostPassBehavior(myRoot, humanoid, dt)
-    bombState.runAwayTimer = bombState.runAwayTimer - dt
-    
-    if bombState.runAwayTimer > 0 then
-        -- RUN AWAY from where the bomb was passed
-        local enemyData = getClosestEnemy(myRoot)
-        if enemyData then
-            local awayDir = (myRoot.Position - enemyData.root.Position)
-            if awayDir.Magnitude > 0 then awayDir = awayDir.Unit end
-            
-            -- Sprint away aggressively
-            local fleeTarget = myRoot.Position + awayDir * 20
-            humanoid:MoveTo(fleeTarget)
-            return "running"
-        else
-            humanoid:MoveTo(myRoot.Position)
-            return "waiting"
+local function tickHold(myRoot, opponentRoot, humanoid, timerValue, dt)
+    if timerValue and timerValue <= 2.5 and timerValue > settings.passAtTime then
+        if not holdState.active then
+            holdState.active = true
+            holdState.startTime = timerValue
         end
+        
+        -- Face AWAY from opponent
+        local awayDir = (myRoot.Position - opponentRoot.Position)
+        if awayDir.Magnitude > 0 then awayDir = awayDir.Unit end
+        
+        -- Walk away slowly while holding
+        continuousWalk(myRoot, humanoid, awayDir)
+        return true
     else
-        -- After running, position optimally to grab bomb when ready
-        local enemyData = getClosestEnemy(myRoot)
-        if enemyData then
-            -- Move closer slowly to maintain spacing
-            local dist = (myRoot.Position - enemyData.root.Position).Magnitude
-            if dist > 15 then
-                -- Walk back toward them to get in grab range
-                local walkTarget = myRoot.Position + (enemyData.root.Position - myRoot.Position).Unit * 8
-                humanoid:MoveTo(walkTarget)
-            else
-                humanoid:MoveTo(myRoot.Position)
-            end
-            return "positioning"
-        end
+        holdState.active = false
+        return false
     end
-    return "idle"
+end
+
+-- ─────────────────────────────────────────────
+--  Smart grab timing based on ping/distance
+-- ─────────────────────────────────────────────
+local function shouldGrabAtOptimalTime(opponentRoot, myRoot, timerValue)
+    if not timerValue then return false end
+    
+    -- Calculate ping adjustment (approx)
+    local dist = (opponentRoot.Position - myRoot.Position).Magnitude
+    local pingAdjust = math.min(0.3, dist / 100)  -- Further = more adjustment
+    
+    -- Try to grab at optimal time (2.0s) instead of waiting for perfect 2.25s
+    local grabWindow = settings.grabOptimalTime + pingAdjust
+    
+    return timerValue <= 2.0 and timerValue >= 1.8
 end
 
 -- ─────────────────────────────────────────────
 --  Main loop
 -- ─────────────────────────────────────────────
-local hadTool   = false
+local hadTool = false
 local backingUp = false
 local inPostPassPhase = false
+local gameActive = true
 
 RunService.Heartbeat:Connect(function(dt)
     local character = localPlayer.Character
@@ -792,16 +741,16 @@ RunService.Heartbeat:Connect(function(dt)
     if hadTool and not holdingTool then
         backingUp = true
         inPostPassPhase = true
-        bombState.runAwayTimer = bombState.RUN_AWAY_TIME
     end
     
     if holdingTool then
         backingUp = false
         inPostPassPhase = false
+        gameActive = true
     end
     hadTool = holdingTool
 
-    if not enabled then
+    if not enabled or not gameActive then
         humanoid:MoveTo(myRoot.Position)
         backingUp = false
         inPostPassPhase = false
@@ -809,26 +758,33 @@ RunService.Heartbeat:Connect(function(dt)
         return
     end
 
-    -- ── POST-PASS PHASE: Run away then reposition to grab ──
+    -- ── POST-PASS PHASE: Run away, never stop walking ──
     if inPostPassPhase and not holdingTool then
-        local state = handlePostPassBehavior(myRoot, humanoid, dt)
-        statusLabel.Text      = "🏃 " .. state .. "..."
-        statusLabel.TextColor3 = Color3.fromRGB(255, 150, 50)
+        local opponentPlayer, opponentRoot = getOpponentHoldingBomb(myRoot)
+        if opponentRoot then
+            local awayDir = (myRoot.Position - opponentRoot.Position)
+            if awayDir.Magnitude > 0 then awayDir = awayDir.Unit end
+            
+            -- CONTINUOUS WALKING (never stop)
+            continuousWalk(myRoot, humanoid, awayDir)
+            statusLabel.Text = "🏃 Running away..."
+            statusLabel.TextColor3 = Color3.fromRGB(255, 150, 50)
+        end
         cameraState.active = false
         return
     end
 
-    -- ── DEFENSE: back up + juke + wall tech ──
-    if backingUp and settings.backEnabled then
+    -- ── DEFENSE: back up + juke ──
+    if backingUp then
         cameraState.active = false
-        local bomberPlayer, bomberRoot = getPlayerHoldingBomb(myRoot)
-        if bomberRoot then
-            local dist    = (myRoot.Position - bomberRoot.Position).Magnitude
-            local awayDir = (myRoot.Position - bomberRoot.Position)
+        local opponentPlayer, opponentRoot = getOpponentHoldingBomb(myRoot)
+        if opponentRoot then
+            local dist    = (myRoot.Position - opponentRoot.Position).Magnitude
+            local awayDir = (myRoot.Position - opponentRoot.Position)
             if awayDir.Magnitude > 0 then awayDir = awayDir.Unit end
 
             if dist < settings.backDistance then
-                statusLabel.Text      = "💨 Backing from " .. bomberPlayer.Name
+                statusLabel.Text = "💨 Backing up..."
                 statusLabel.TextColor3 = Color3.fromRGB(100, 200, 255)
 
                 local juked = false
@@ -837,20 +793,13 @@ RunService.Heartbeat:Connect(function(dt)
                 end
 
                 if not juked then
-                    local retreatTarget = myRoot.Position + awayDir * settings.backDistance
-                    if settings.wallTechEnabled then
-                        if not applyWallTech(myRoot, awayDir, humanoid) then
-                            humanoid:MoveTo(retreatTarget)
-                        end
-                    else
-                        humanoid:MoveTo(retreatTarget)
-                    end
+                    continuousWalk(myRoot, humanoid, awayDir)
                 end
             else
                 backingUp = false
                 jukeState.cooldown = 0
-                jukeState.active   = false
-                statusLabel.Text      = "✅ Safe!"
+                jukeState.active = false
+                statusLabel.Text = "✅ Safe!"
                 statusLabel.TextColor3 = Color3.fromRGB(100, 200, 100)
             end
         else
@@ -861,7 +810,7 @@ RunService.Heartbeat:Connect(function(dt)
 
     -- ── Guard: must hold bomb ──
     if not holdingTool then
-        statusLabel.Text      = "Must be holding the bomb"
+        statusLabel.Text = "Must be holding the bomb"
         statusLabel.TextColor3 = Color3.fromRGB(120, 120, 140)
         humanoid:MoveTo(myRoot.Position)
         cameraState.active = false
@@ -877,9 +826,14 @@ RunService.Heartbeat:Connect(function(dt)
             if timerValue <= settings.triggerTime then
                 shouldTrack = true
             else
-                statusLabel.Text      = "⏳ Walking to opponent... " .. string.format("%.2f", timerValue) .. "s"
+                statusLabel.Text = "⏳ Walking to opponent..."
                 statusLabel.TextColor3 = Color3.fromRGB(200, 180, 50)
-                autoWalkToOpponent(myRoot, humanoid)
+                
+                local opponentData = getOpponentInMatch(myRoot)
+                if opponentData then
+                    local dirToEnemy = (opponentData.root.Position - myRoot.Position).Unit
+                    continuousWalk(myRoot, humanoid, dirToEnemy)
+                end
                 return
             end
         else
@@ -889,48 +843,58 @@ RunService.Heartbeat:Connect(function(dt)
         shouldTrack = true
     end
 
-    -- ── OFFENSE: track closest enemy + shiftlock camera + humanized movement ──
+    -- ── OFFENSE: track opponent + hold mechanic ──
     if shouldTrack then
-        local enemyData = getClosestEnemy(myRoot)
-        if enemyData then
-            local dist = (myRoot.Position - enemyData.root.Position).Magnitude
-            statusLabel.Text      = "🎯 " .. enemyData.player.Name .. " | " .. math.floor(dist) .. "m"
+        local opponentData = getOpponentInMatch(myRoot)
+        if opponentData then
+            local dist = (myRoot.Position - opponentData.root.Position).Magnitude
+            statusLabel.Text = "🎯 " .. opponentData.player.Name .. " | " .. math.floor(dist) .. "m"
             statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
 
-            if dist > settings.stopDistance then
-                -- Update shiftlock camera (with humanized spazz)
-                updateShiftlockCamera(myRoot, enemyData.root.Position, dt)
+            -- CHECK FOR HOLD MECHANIC (2.25s - 1.0s window)
+            local isHolding = tickHold(myRoot, opponentData.root.Position, humanoid, timerValue, dt)
+            if isHolding then
+                statusLabel.Text = "💣 HOLDING | " .. string.format("%.2f", timerValue) .. "s"
+                statusLabel.TextColor3 = Color3.fromRGB(255, 200, 50)
+                updateShiftlockCamera(myRoot, opponentData.root.Position, dt)
+                return
+            end
+
+            -- SMART GRAB: Grab at 2.0s if in good range
+            if timerValue and timerValue <= 2.0 and dist <= 15 then
+                statusLabel.Text = "⏱️ OPTIMAL GRAB"
+                statusLabel.TextColor3 = Color3.fromRGB(150, 255, 100)
+                humanoid:MoveTo(myRoot.Position)
+                updateShiftlockCamera(myRoot, opponentData.root.Position, dt)
+            elseif dist > settings.stopDistance then
+                -- CONTINUOUS OFFENSE MOVEMENT
+                updateShiftlockCamera(myRoot, opponentData.root.Position, dt)
                 
-                -- Move toward enemy with humanization or wall tech
                 if settings.humanizeEnabled then
-                    humanizedMoveTo(myRoot, enemyData.root.Position, humanoid, dt)
+                    humanizedMoveTo(myRoot, opponentData.root.Position, humanoid, dt)
                 else
-                    local intendedDir = (enemyData.root.Position - myRoot.Position).Unit
+                    local intendedDir = (opponentData.root.Position - myRoot.Position).Unit
                     if settings.wallTechEnabled then
                         if not applyWallTech(myRoot, intendedDir, humanoid) then
-                            humanoid:MoveTo(enemyData.root.Position)
+                            humanoid:MoveTo(opponentData.root.Position)
                         end
                     else
-                        humanoid:MoveTo(enemyData.root.Position)
+                        humanoid:MoveTo(opponentData.root.Position)
                     end
                 end
             else
                 humanoid:MoveTo(myRoot.Position)
-                updateShiftlockCamera(myRoot, enemyData.root.Position, dt)
+                updateShiftlockCamera(myRoot, opponentData.root.Position, dt)
             end
         else
-            statusLabel.Text      = "No targets found"
+            statusLabel.Text = "No opponent found"
             statusLabel.TextColor3 = Color3.fromRGB(120, 120, 140)
+            gameActive = false
             cameraState.active = false
         end
     end
 end)
 
--- Allow manual input to override
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or
-       input.UserInputType == Enum.UserInputType.Keyboard then
-        -- User taking manual control
-    end
 end)
