@@ -1,6 +1,6 @@
 -- Leo's Hub - Auto Track v3 (LocalScript)
 -- Place inside StarterCharacterScripts
--- FEATURES: Wall Tech, Fast Jukes, Shiftlock Camera Control, Humanized Tracking, Auto-Walk Offense
+-- FEATURES: Wall Tech, Fast Jukes, Shiftlock Camera Control, Humanized Tracking, Auto-Walk Offense, Smart Bomb Grab
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -18,13 +18,15 @@ local settingsOpen = false
 local settings = {
     stopDistance      = 0.5,
     backDistance      = 5,
-    triggerTime       = 10,      -- NOW SET TO 10 AS REQUESTED
+    triggerTime       = 10,
     backEnabled       = true,
     triggerEnabled    = true,
     wallTechEnabled   = true,
     jukeEnabled       = true,
     humanizeEnabled   = true,
-    shiftlockEnabled  = true,    -- NEW: Enable shiftlock camera control
+    shiftlockEnabled  = true,
+    grabOptimalTime   = 2.25,   -- Optimal time to grab bomb
+    passAtTime        = 1.0,    -- Will pass at this time for kill
 }
 
 -- ─────────────────────────────────────────────
@@ -192,7 +194,7 @@ scrollFrame.BackgroundTransparency = 1
 scrollFrame.BorderSizePixel = 0
 scrollFrame.ScrollBarThickness = 4
 scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100)
-scrollFrame.CanvasSize = UDim2.new(0, 0, 0, 650)
+scrollFrame.CanvasSize = UDim2.new(0, 0, 0, 750)
 scrollFrame.Parent = settingsFrame
 
 local TOGGLE_H = 46
@@ -259,7 +261,7 @@ local function createSetting(labelText, key, step, minVal, maxVal, posY, toggleK
     valueLabel.Font = Enum.Font.GothamBold
     valueLabel.TextSize = 16
     valueLabel.BorderSizePixel = 0
-    valueLabel.Text = string.format("%.1f", settings[key])
+    valueLabel.Text = string.format("%.2f", settings[key])
     valueLabel.Parent = scrollFrame
     Instance.new("UICorner", valueLabel).CornerRadius = UDim.new(0, 8)
 
@@ -277,13 +279,13 @@ local function createSetting(labelText, key, step, minVal, maxVal, posY, toggleK
 
     minusBtn.MouseButton1Click:Connect(function()
         settings[key] = math.max(minVal, settings[key] - step)
-        valueLabel.Text = string.format("%.1f", settings[key])
+        valueLabel.Text = string.format("%.2f", settings[key])
         saveSettings()
     end)
 
     plusBtn.MouseButton1Click:Connect(function()
         settings[key] = math.min(maxVal, settings[key] + step)
-        valueLabel.Text = string.format("%.1f", settings[key])
+        valueLabel.Text = string.format("%.2f", settings[key])
         saveSettings()
     end)
 end
@@ -321,12 +323,14 @@ end
 createSetting("Stop Distance", "stopDistance", 0.5, 0.5, 1,   10)
 createSetting("Back Distance", "backDistance", 1,   1,   15,  90,  "backEnabled")
 createSetting("Trigger Time",  "triggerTime",  0.5, 0.5, 10,  226, "triggerEnabled")
+createSetting("Grab at Time",  "grabOptimalTime", 0.25, 0.5, 10, 362)
+createSetting("Pass at Time",  "passAtTime", 0.25, 0.1, 3,   476)
 
 -- New toggle-only settings
-createToggleOnly("Wall Tech (Glide Along Walls)", "wallTechEnabled", 390)
-createToggleOnly("Juke Defense (FAST)",           "jukeEnabled",     436)
-createToggleOnly("Humanized Offense",             "humanizeEnabled", 482)
-createToggleOnly("Shiftlock + Camera Control",    "shiftlockEnabled",528)
+createToggleOnly("Wall Tech (Glide Along Walls)", "wallTechEnabled", 590)
+createToggleOnly("Juke Defense (FAST)",           "jukeEnabled",     636)
+createToggleOnly("Humanized Offense",             "humanizeEnabled", 682)
+createToggleOnly("Shiftlock + Camera Control",    "shiftlockEnabled",728)
 
 -- ─────────────────────────────────────────────
 --  Dragging
@@ -366,7 +370,7 @@ settingsBtn.MouseButton1Click:Connect(function()
     settingsOpen = not settingsOpen
     contentFrame.Visible = not settingsOpen
     settingsFrame.Visible = settingsOpen
-    frame.Size = UDim2.new(0, 320, 0, settingsOpen and 500 or 250)
+    frame.Size = UDim2.new(0, 320, 0, settingsOpen and 550 or 250)
     settingsBtn.TextColor3 = settingsOpen
         and Color3.fromRGB(255, 200, 50)
         or Color3.fromRGB(200, 200, 200)
@@ -382,7 +386,7 @@ minButton.MouseButton1Click:Connect(function()
     else
         contentFrame.Visible = not settingsOpen
         settingsFrame.Visible = settingsOpen
-        frame.Size = UDim2.new(0, 320, 0, settingsOpen and 500 or 250)
+        frame.Size = UDim2.new(0, 320, 0, settingsOpen and 550 or 250)
         minButton.Text = "－"
     end
 end)
@@ -563,10 +567,10 @@ local jukeState = {
     direction   = Vector3.new(1, 0, 0),
     timer       = 0,
     cooldown    = 0,
-    JUKE_DUR    = 0.15,  -- FASTER: 0.15s bursts (was 0.35)
-    JUKE_CD_MIN = 0.08,  -- FASTER: 0.08s cooldown (was 0.5)
-    JUKE_CD_MAX = 0.25,  -- FASTER: 0.25s max (was 1.2)
-    JUKE_DIST   = 12,    -- BIGGER distance per juke
+    JUKE_DUR    = 0.15,
+    JUKE_CD_MIN = 0.08,
+    JUKE_CD_MAX = 0.25,
+    JUKE_DIST   = 12,
 }
 
 local function tickJuke(dt, myRoot, awayDir, humanoid)
@@ -619,43 +623,33 @@ local cameraState = {
 local function updateShiftlockCamera(myRoot, targetPos, dt)
     if not settings.shiftlockEnabled then return end
     
-    -- Activate shiftlock (over-shoulder camera)
     cameraState.active = true
     
-    -- Calculate direction to target (opponent)
     local dirToTarget = (targetPos - myRoot.Position)
     if dirToTarget.Magnitude > 0 then
         dirToTarget = dirToTarget.Unit
     end
     
-    -- Get base yaw from direction
     local baseYaw = math.atan2(dirToTarget.X, dirToTarget.Z)
     
-    -- Add humanized spazz: rapid left/right camera twitches
-    -- This simulates muscle spazzing/twitching while aiming
     cameraState.spazzTimer = cameraState.spazzTimer - dt
     if cameraState.spazzTimer <= 0 then
-        -- Random spazz intensity (0.3 to 0.8 radians = ~17-46 degrees)
         cameraState.spazzIntensity = 0.3 + math.random() * 0.5
-        cameraState.spazzTimer = 0.05 + math.random() * 0.08  -- new spazz every 50-130ms
+        cameraState.spazzTimer = 0.05 + math.random() * 0.08
     end
     
-    -- Apply oscillating spazz
     local spazzAmount = math.sin(cameraState.spazzTimer * 100) * cameraState.spazzIntensity
     local finalYaw = baseYaw + spazzAmount
     
-    -- Position camera behind character's right shoulder (bomb in right hand)
     local offsetDist = 8
     local offsetHeight = 1.5
-    local offsetSide = 4  -- right side offset for bomb visibility
+    local offsetSide = 4
     
-    -- Calculate camera position
     local offsetX = math.sin(finalYaw) * offsetSide - math.cos(finalYaw) * offsetDist
     local offsetZ = math.cos(finalYaw) * offsetSide + math.sin(finalYaw) * offsetDist
     
     local cameraPos = myRoot.Position + Vector3.new(offsetX, offsetHeight, offsetZ)
     
-    -- Look slightly ahead of target (humanized lead)
     local lookTarget = targetPos + Vector3.new(0, 1, 0)
     
     Camera.CFrame = CFrame.new(cameraPos, lookTarget)
@@ -663,15 +657,15 @@ end
 
 -- ─────────────────────────────────────────────
 --  Humanized offense
---  Slight positional drift + throttled updates
+--  Slight positional drift + throttled updates + MORE ERRATIC
 -- ─────────────────────────────────────────────
 local humanizeState = {
     offset      = Vector3.new(0, 0, 0),
     driftTimer  = 0,
-    DRIFT_INT   = 0.18,
-    MAX_OFFSET  = 1.4,
+    DRIFT_INT   = 0.12,   -- FASTER drift updates for more erratic movement
+    MAX_OFFSET  = 2.0,    -- LARGER offsets for more chaotic movement
     updateTimer = 0,
-    UPDATE_INT  = 0.08,
+    UPDATE_INT  = 0.06,   -- MORE frequent updates for unpredictability
 }
 
 local function humanizedMoveTo(myRoot, targetPos, humanoid, dt)
@@ -683,12 +677,12 @@ local function humanizedMoveTo(myRoot, targetPos, humanoid, dt)
             0,
             (math.random() * 2 - 1) * m
         )
-        humanizeState.driftTimer = humanizeState.DRIFT_INT + math.random() * 0.12
+        humanizeState.driftTimer = humanizeState.DRIFT_INT + math.random() * 0.08
     end
 
     humanizeState.updateTimer = humanizeState.updateTimer - dt
     if humanizeState.updateTimer > 0 then return end
-    humanizeState.updateTimer = humanizeState.UPDATE_INT + math.random() * 0.06
+    humanizeState.updateTimer = humanizeState.UPDATE_INT + math.random() * 0.04
 
     local adjustedTarget = targetPos + humanizeState.offset
     local intendedDir    = (adjustedTarget - myRoot.Position)
@@ -707,14 +701,12 @@ end
 
 -- ─────────────────────────────────────────────
 --  AUTO-WALK TO OPPONENT AT START
---  When offense starts (holding bomb), walk toward closest enemy
 -- ─────────────────────────────────────────────
 local function autoWalkToOpponent(myRoot, humanoid)
     local enemyData = getClosestEnemy(myRoot)
     if enemyData then
         local dist = (myRoot.Position - enemyData.root.Position).Magnitude
         
-        -- Walk toward opponent if far away
         if dist > settings.stopDistance + 5 then
             local dirToEnemy = (enemyData.root.Position - myRoot.Position).Unit
             local targetPos = myRoot.Position + dirToEnemy * 10
@@ -733,10 +725,58 @@ local function autoWalkToOpponent(myRoot, humanoid)
 end
 
 -- ─────────────────────────────────────────────
+--  SMART BOMB GRAB LOGIC
+--  After passing, run away then grab at optimal time
+-- ─────────────────────────────────────────────
+local bombState = {
+    justPassed = false,
+    runAwayTimer = 0,
+    RUN_AWAY_TIME = 0.8,  -- Run away for 0.8s after pass
+}
+
+local function handlePostPassBehavior(myRoot, humanoid, dt)
+    bombState.runAwayTimer = bombState.runAwayTimer - dt
+    
+    if bombState.runAwayTimer > 0 then
+        -- RUN AWAY from where the bomb was passed
+        local enemyData = getClosestEnemy(myRoot)
+        if enemyData then
+            local awayDir = (myRoot.Position - enemyData.root.Position)
+            if awayDir.Magnitude > 0 then awayDir = awayDir.Unit end
+            
+            -- Sprint away aggressively
+            local fleeTarget = myRoot.Position + awayDir * 20
+            humanoid:MoveTo(fleeTarget)
+            return "running"
+        else
+            humanoid:MoveTo(myRoot.Position)
+            return "waiting"
+        end
+    else
+        -- After running, position optimally to grab bomb when ready
+        local enemyData = getClosestEnemy(myRoot)
+        if enemyData then
+            -- Move closer slowly to maintain spacing
+            local dist = (myRoot.Position - enemyData.root.Position).Magnitude
+            if dist > 15 then
+                -- Walk back toward them to get in grab range
+                local walkTarget = myRoot.Position + (enemyData.root.Position - myRoot.Position).Unit * 8
+                humanoid:MoveTo(walkTarget)
+            else
+                humanoid:MoveTo(myRoot.Position)
+            end
+            return "positioning"
+        end
+    end
+    return "idle"
+end
+
+-- ─────────────────────────────────────────────
 --  Main loop
 -- ─────────────────────────────────────────────
 local hadTool   = false
 local backingUp = false
+local inPostPassPhase = false
 
 RunService.Heartbeat:Connect(function(dt)
     local character = localPlayer.Character
@@ -748,13 +788,32 @@ RunService.Heartbeat:Connect(function(dt)
     local myTool    = character:FindFirstChildOfClass("Tool")
     local holdingTool = myTool ~= nil
 
-    if hadTool and not holdingTool then backingUp = true end
-    if holdingTool then backingUp = false end
+    -- Detect if we just passed the bomb
+    if hadTool and not holdingTool then
+        backingUp = true
+        inPostPassPhase = true
+        bombState.runAwayTimer = bombState.RUN_AWAY_TIME
+    end
+    
+    if holdingTool then
+        backingUp = false
+        inPostPassPhase = false
+    end
     hadTool = holdingTool
 
     if not enabled then
         humanoid:MoveTo(myRoot.Position)
         backingUp = false
+        inPostPassPhase = false
+        cameraState.active = false
+        return
+    end
+
+    -- ── POST-PASS PHASE: Run away then reposition to grab ──
+    if inPostPassPhase and not holdingTool then
+        local state = handlePostPassBehavior(myRoot, humanoid, dt)
+        statusLabel.Text      = "🏃 " .. state .. "..."
+        statusLabel.TextColor3 = Color3.fromRGB(255, 150, 50)
         cameraState.active = false
         return
     end
@@ -818,9 +877,8 @@ RunService.Heartbeat:Connect(function(dt)
             if timerValue <= settings.triggerTime then
                 shouldTrack = true
             else
-                statusLabel.Text      = "⏳ Walking to opponent... " .. string.format("%.1f", timerValue) .. "s"
+                statusLabel.Text      = "⏳ Walking to opponent... " .. string.format("%.2f", timerValue) .. "s"
                 statusLabel.TextColor3 = Color3.fromRGB(200, 180, 50)
-                -- AUTO-WALK instead of waiting
                 autoWalkToOpponent(myRoot, humanoid)
                 return
             end
@@ -836,7 +894,7 @@ RunService.Heartbeat:Connect(function(dt)
         local enemyData = getClosestEnemy(myRoot)
         if enemyData then
             local dist = (myRoot.Position - enemyData.root.Position).Magnitude
-            statusLabel.Text      = "🎯 " .. enemyData.player.Name .. " | " .. math.floor(dist) .. " studs"
+            statusLabel.Text      = "🎯 " .. enemyData.player.Name .. " | " .. math.floor(dist) .. "m"
             statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
 
             if dist > settings.stopDistance then
@@ -868,12 +926,11 @@ RunService.Heartbeat:Connect(function(dt)
     end
 end)
 
--- Allow manual input to override (user can click and control character)
+-- Allow manual input to override
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
     if input.UserInputType == Enum.UserInputType.MouseButton1 or
        input.UserInputType == Enum.UserInputType.Keyboard then
-        -- User taking manual control resets camera control temporarily
-        -- But script continues running; user can switch back to auto
+        -- User taking manual control
     end
 end)
