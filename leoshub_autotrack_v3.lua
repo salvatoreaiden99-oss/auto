@@ -1,6 +1,6 @@
--- Leo's Hub - Auto Track v4 (LocalScript)
+-- Leo's Hub - Auto Track v4 FIXED (LocalScript)
 -- Place inside StarterCharacterScripts
--- FEATURES: Smart opponent detection, humanized camera, smart grab timing, hold mechanic, continuous movement
+-- FEATURES: Smart opponent detection, humanized camera, smart grab timing, hold mechanic, continuous movement, wall gliding navigation
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -426,22 +426,24 @@ toggleBtn.MouseButton1Click:Connect(function() setEnabled(not enabled) end)
 teamBtn.MouseButton1Click:Connect(function() setTeamCheck(not teamCheckEnabled) end)
 
 -- ─────────────────────────────────────────────
---  Opponent Detection (Only enemy in the match)
+--  Team detection - FIXED
 -- ─────────────────────────────────────────────
 local function getPlayerTeam(player)
-    if player.Team then
-        return player.Team.Name
-    end
+    if player.Team then return player.Team.Name end
     return nil
 end
 
 local function isTeammate(otherPlayer)
     if not teamCheckEnabled then return false end
-    return getPlayerTeam(localPlayer) == getPlayerTeam(otherPlayer)
+    local myTeam = getPlayerTeam(localPlayer)
+    local theirTeam = getPlayerTeam(otherPlayer)
+    if myTeam and theirTeam then
+        return myTeam == theirTeam
+    end
+    return false
 end
 
 local function getOpponentInMatch(myRoot)
-    -- Find THE opponent in this 1v1 match (not teammates, not random players)
     local closest, closestDist = nil, math.huge
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= localPlayer and not isTeammate(player) then
@@ -496,9 +498,9 @@ local function getToolTimer(tool)
 end
 
 -- ─────────────────────────────────────────────
---  Wall Tech
+--  Wall Tech (glide along walls + navigate around obstacles)
 -- ─────────────────────────────────────────────
-local RAY_LEN   = 2.5
+local RAY_LEN = 2.5
 local WALL_CAST = RaycastParams.new()
 WALL_CAST.FilterType = Enum.RaycastFilterType.Exclude
 
@@ -523,7 +525,7 @@ local function applyWallTech(myRoot, intendedDir, humanoid)
 end
 
 -- ─────────────────────────────────────────────
---  FAST JUKE (defense)
+--  FAST JUKE (defense - ALWAYS tries to juke)
 -- ─────────────────────────────────────────────
 local jukeState = {
     active      = false,
@@ -571,13 +573,12 @@ local function tickJuke(dt, myRoot, awayDir, humanoid)
 end
 
 -- ─────────────────────────────────────────────
---  HUMANIZED CAMERA (less aggressive, more human-like)
+--  HUMANIZED CAMERA (4-8 degrees, smooth spazz)
 -- ─────────────────────────────────────────────
 local cameraState = {
     active         = false,
     spazzIntensity = 0,
     spazzTimer     = 0,
-    muscleSpazz    = 0,
 }
 
 local function updateShiftlockCamera(myRoot, targetPos, dt)
@@ -592,18 +593,18 @@ local function updateShiftlockCamera(myRoot, targetPos, dt)
     
     local baseYaw = math.atan2(dirToTarget.X, dirToTarget.Z)
     
-    -- HUMANIZED SPAZZ: slower, less aggressive
+    -- Humanized spazz: smaller, slower oscillations
     cameraState.spazzTimer = cameraState.spazzTimer - dt
     if cameraState.spazzTimer <= 0 then
-        -- Much smaller spazz intensity (0.08 to 0.15 radians = ~4.5-8.6 degrees)
-        cameraState.spazzIntensity = 0.08 + math.random() * 0.07
-        -- Less frequent spazz (200-350ms between twitches)
+        -- 4-8 degrees (0.07-0.14 radians)
+        cameraState.spazzIntensity = 0.07 + math.random() * 0.07
+        -- Twitch every 200-350ms
         cameraState.spazzTimer = 0.2 + math.random() * 0.15
     end
     
-    -- Slower, more natural oscillation
-    cameraState.muscleSpazz = math.sin(cameraState.spazzTimer * 20) * cameraState.spazzIntensity
-    local finalYaw = baseYaw + cameraState.muscleSpazz
+    -- Slower, more humanlike oscillation
+    local spazzAmount = math.sin(cameraState.spazzTimer * 15) * cameraState.spazzIntensity
+    local finalYaw = baseYaw + spazzAmount
     
     local offsetDist = 8
     local offsetHeight = 1.5
@@ -619,7 +620,7 @@ local function updateShiftlockCamera(myRoot, targetPos, dt)
 end
 
 -- ─────────────────────────────────────────────
---  Humanized offense
+--  Humanized movement
 -- ─────────────────────────────────────────────
 local humanizeState = {
     offset      = Vector3.new(0, 0, 0),
@@ -662,34 +663,26 @@ local function humanizedMoveTo(myRoot, targetPos, humanoid, dt)
 end
 
 -- ─────────────────────────────────────────────
---  CONTINUOUS WALKING (never stop moving)
+--  Continuous walking (NEVER stops)
 -- ─────────────────────────────────────────────
 local function continuousWalk(myRoot, humanoid, direction)
-    local target = myRoot.Position + direction * 25
-    if settings.wallTechEnabled then
-        if not applyWallTech(myRoot, direction, humanoid) then
+    if direction.Magnitude > 0.1 then
+        local target = myRoot.Position + direction * 25
+        if settings.wallTechEnabled then
+            if not applyWallTech(myRoot, direction, humanoid) then
+                humanoid:MoveTo(target)
+            end
+        else
             humanoid:MoveTo(target)
         end
-    else
-        humanoid:MoveTo(target)
     end
 end
 
 -- ─────────────────────────────────────────────
---  HOLD MECHANIC (face away, hold bomb til 2/1 secs)
+--  HOLD MECHANIC (face away, hold bomb 2.25-1.0s)
 -- ─────────────────────────────────────────────
-local holdState = {
-    active = false,
-    startTime = 0,
-}
-
 local function tickHold(myRoot, opponentRoot, humanoid, timerValue, dt)
     if timerValue and timerValue <= 2.5 and timerValue > settings.passAtTime then
-        if not holdState.active then
-            holdState.active = true
-            holdState.startTime = timerValue
-        end
-        
         -- Face AWAY from opponent
         local awayDir = (myRoot.Position - opponentRoot.Position)
         if awayDir.Magnitude > 0 then awayDir = awayDir.Unit end
@@ -697,26 +690,8 @@ local function tickHold(myRoot, opponentRoot, humanoid, timerValue, dt)
         -- Walk away slowly while holding
         continuousWalk(myRoot, humanoid, awayDir)
         return true
-    else
-        holdState.active = false
-        return false
     end
-end
-
--- ─────────────────────────────────────────────
---  Smart grab timing based on ping/distance
--- ─────────────────────────────────────────────
-local function shouldGrabAtOptimalTime(opponentRoot, myRoot, timerValue)
-    if not timerValue then return false end
-    
-    -- Calculate ping adjustment (approx)
-    local dist = (opponentRoot.Position - myRoot.Position).Magnitude
-    local pingAdjust = math.min(0.3, dist / 100)  -- Further = more adjustment
-    
-    -- Try to grab at optimal time (2.0s) instead of waiting for perfect 2.25s
-    local grabWindow = settings.grabOptimalTime + pingAdjust
-    
-    return timerValue <= 2.0 and timerValue >= 1.8
+    return false
 end
 
 -- ─────────────────────────────────────────────
@@ -726,6 +701,7 @@ local hadTool = false
 local backingUp = false
 local inPostPassPhase = false
 local gameActive = true
+local manualControlActive = false
 
 RunService.Heartbeat:Connect(function(dt)
     local character = localPlayer.Character
@@ -734,10 +710,10 @@ RunService.Heartbeat:Connect(function(dt)
     local myRoot   = character:FindFirstChild("HumanoidRootPart")
     if not humanoid or not myRoot then return end
 
-    local myTool    = character:FindFirstChildOfClass("Tool")
+    local myTool = character:FindFirstChildOfClass("Tool")
     local holdingTool = myTool ~= nil
 
-    -- Detect if we just passed the bomb
+    -- Detect pass
     if hadTool and not holdingTool then
         backingUp = true
         inPostPassPhase = true
@@ -750,32 +726,35 @@ RunService.Heartbeat:Connect(function(dt)
     end
     hadTool = holdingTool
 
-    if not enabled or not gameActive then
-        humanoid:MoveTo(myRoot.Position)
-        backingUp = false
-        inPostPassPhase = false
-        cameraState.active = false
+    if not enabled or not gameActive or manualControlActive then
+        if not manualControlActive then
+            humanoid:MoveTo(myRoot.Position)
+            backingUp = false
+            inPostPassPhase = false
+            cameraState.active = false
+        end
         return
     end
 
-    -- ── POST-PASS PHASE: Run away, never stop walking ──
+    -- ── POST-PASS PHASE: Run away (CONTINUOUS) ──
     if inPostPassPhase and not holdingTool then
         local opponentPlayer, opponentRoot = getOpponentHoldingBomb(myRoot)
         if opponentRoot then
             local awayDir = (myRoot.Position - opponentRoot.Position)
             if awayDir.Magnitude > 0 then awayDir = awayDir.Unit end
             
-            -- CONTINUOUS WALKING (never stop)
             continuousWalk(myRoot, humanoid, awayDir)
             statusLabel.Text = "🏃 Running away..."
             statusLabel.TextColor3 = Color3.fromRGB(255, 150, 50)
+        else
+            inPostPassPhase = false
         end
         cameraState.active = false
         return
     end
 
-    -- ── DEFENSE: back up + juke ──
-    if backingUp then
+    -- ── DEFENSE: back up + juke + wall tech ──
+    if backingUp and settings.backEnabled then
         cameraState.active = false
         local opponentPlayer, opponentRoot = getOpponentHoldingBomb(myRoot)
         if opponentRoot then
@@ -804,6 +783,7 @@ RunService.Heartbeat:Connect(function(dt)
             end
         else
             backingUp = false
+            gameActive = false
         end
         return
     end
@@ -843,7 +823,7 @@ RunService.Heartbeat:Connect(function(dt)
         shouldTrack = true
     end
 
-    -- ── OFFENSE: track opponent + hold mechanic ──
+    -- ── OFFENSE: track opponent ──
     if shouldTrack then
         local opponentData = getOpponentInMatch(myRoot)
         if opponentData then
@@ -851,7 +831,7 @@ RunService.Heartbeat:Connect(function(dt)
             statusLabel.Text = "🎯 " .. opponentData.player.Name .. " | " .. math.floor(dist) .. "m"
             statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
 
-            -- CHECK FOR HOLD MECHANIC (2.25s - 1.0s window)
+            -- CHECK HOLD MECHANIC
             local isHolding = tickHold(myRoot, opponentData.root.Position, humanoid, timerValue, dt)
             if isHolding then
                 statusLabel.Text = "💣 HOLDING | " .. string.format("%.2f", timerValue) .. "s"
@@ -860,14 +840,13 @@ RunService.Heartbeat:Connect(function(dt)
                 return
             end
 
-            -- SMART GRAB: Grab at 2.0s if in good range
-            if timerValue and timerValue <= 2.0 and dist <= 15 then
+            -- SMART GRAB at 2.0s
+            if timerValue and timerValue <= 2.0 and timerValue >= 1.8 and dist <= 15 then
                 statusLabel.Text = "⏱️ OPTIMAL GRAB"
                 statusLabel.TextColor3 = Color3.fromRGB(150, 255, 100)
                 humanoid:MoveTo(myRoot.Position)
                 updateShiftlockCamera(myRoot, opponentData.root.Position, dt)
             elseif dist > settings.stopDistance then
-                -- CONTINUOUS OFFENSE MOVEMENT
                 updateShiftlockCamera(myRoot, opponentData.root.Position, dt)
                 
                 if settings.humanizeEnabled then
@@ -895,6 +874,24 @@ RunService.Heartbeat:Connect(function(dt)
     end
 end)
 
+-- ─────────────────────────────────────────────
+--  Manual override (click button to take control)
+-- ─────────────────────────────────────────────
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed then return end
+    if not enabled then return end
+    
+    -- Detect mouse click or any key press to enable manual control
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or
+       input.UserInputType == Enum.UserInputType.Keyboard then
+        manualControlActive = true
+        cameraState.active = false
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input, gameProcessed)
+    -- Optional: disable manual control after release
+    -- Uncomment below if you want auto-track to resume after releasing keys
+    -- if input.UserInputType == Enum.UserInputType.Keyboard then
+    --     manualControlActive = false
+    -- end
 end)
