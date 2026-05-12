@@ -1,4 +1,4 @@
--- Leo's Hub - Auto Track v4 FIXED (LocalScript)
+-- Leo's Hub - Auto Track v4 FINAL (LocalScript)
 -- Place inside StarterCharacterScripts
 -- FEATURES: Smart opponent detection, humanized camera, smart grab timing, hold mechanic, continuous movement, wall gliding navigation
 
@@ -84,7 +84,7 @@ local dragLabel = Instance.new("TextLabel")
 dragLabel.Size = UDim2.new(1, -145, 1, 0)
 dragLabel.Position = UDim2.new(0, 12, 0, 0)
 dragLabel.BackgroundTransparency = 1
-dragLabel.Text = "⠿ Leo's Hub v4"
+dragLabel.Text = "⠿ Leo's Hub v4 FINAL"
 dragLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
 dragLabel.Font = Enum.Font.GothamBold
 dragLabel.TextSize = 17
@@ -701,7 +701,6 @@ local hadTool = false
 local backingUp = false
 local inPostPassPhase = false
 local gameActive = true
-local manualControlActive = false
 
 RunService.Heartbeat:Connect(function(dt)
     local character = localPlayer.Character
@@ -726,13 +725,11 @@ RunService.Heartbeat:Connect(function(dt)
     end
     hadTool = holdingTool
 
-    if not enabled or not gameActive or manualControlActive then
-        if not manualControlActive then
-            humanoid:MoveTo(myRoot.Position)
-            backingUp = false
-            inPostPassPhase = false
-            cameraState.active = false
-        end
+    if not enabled or not gameActive then
+        humanoid:MoveTo(myRoot.Position)
+        backingUp = false
+        inPostPassPhase = false
+        cameraState.active = false
         return
     end
 
@@ -875,23 +872,34 @@ RunService.Heartbeat:Connect(function(dt)
 end)
 
 -- ─────────────────────────────────────────────
---  Manual override (click button to take control)
+--  Manual override (FIXED - uses mouse position to check if clicking on GUI)
 -- ─────────────────────────────────────────────
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if not enabled then return end
-    
-    -- Detect mouse click or any key press to enable manual control
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or
-       input.UserInputType == Enum.UserInputType.Keyboard then
-        manualControlActive = true
-        cameraState.active = false
-    end
-end)
+local lastInputTime = 0
+local INPUT_COOLDOWN = 0.1  -- Prevent spam
 
-UserInputService.InputEnded:Connect(function(input, gameProcessed)
-    -- Optional: disable manual control after release
-    -- Uncomment below if you want auto-track to resume after releasing keys
-    -- if input.UserInputType == Enum.UserInputType.Keyboard then
-    --     manualControlActive = false
-    -- end
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if not enabled or gameProcessed then return end
+    if tick() - lastInputTime < INPUT_COOLDOWN then return end
+    
+    -- Only disable auto-track if clicking in game world, not GUI
+    local mousePos = game:GetService("Mouse").X
+    local guiPos = frame.Position.X.Offset + frame.Size.X.Offset
+    
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        -- If clicked on GUI, don't disable auto-track
+        if mousePos >= frame.Position.X.Offset and mousePos <= guiPos then
+            return
+        end
+    end
+    
+    -- User is taking manual control
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or
+       input.UserInputType == Enum.UserInputType.MouseButton2 or
+       (input.UserInputType == Enum.UserInputType.Keyboard and 
+        input.KeyCode ~= Enum.KeyCode.Escape) then
+        statusLabel.Text = "👤 Manual Control Active"
+        statusLabel.TextColor3 = Color3.fromRGB(255, 255, 100)
+        cameraState.active = false
+        lastInputTime = tick()
+    end
 end)
